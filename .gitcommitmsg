@@ -1,0 +1,12 @@
+feat: production-grade RAG pipeline with hybrid dense+BM25 retrieval, citation verification
+
+- ChromaDB dense + BM25 sparse retrieval with RRF fusion
+- Cross-encoder reranking for precision boost
+- LLM generation with inline citations + verification
+- Golden eval dataset + harness (runs today with Omniroute free tier)
+- FastAPI server with /v1/ask, /v1/ingest, /v1/stats
+- Docker + docker-compose ready
+- 12 unit tests passing
+- BM25-only mode: works with Omniroute (no API key needed)
+- Full hybrid mode: set USE_DENSE_RETRIEVAL=true + OpenRouter key
+- Omniroute auto/chat → hy3-free for zero-cost LLM generation
