@@ -1,161 +1,224 @@
-# RAG Hybrid Search — Production-Grade RAG with Hybrid Retrieval
+# RAG Hybrid Search
 
-> A production-grade Retrieval-Augmented Generation pipeline combining dense vector search with sparse BM25 keyword matching, cross-encoder reranking, and grounded generation with verified inline citations.
+**Ask questions about your own documents. Get answers with citations.**
 
-**Demo status:** Running end-to-end (BM25-only mode — see Evaluation section)
+A search engine that reads your files, understands them, and answers your questions in plain English — with links to exactly which document each fact came from.
 
-## Architecture
+---
+
+## What is this for?
+
+You have a folder of documents. Contracts, manuals, codebases, research papers, notes. You know the information is in there but searching it means opening files and reading through them.
+
+This turns that folder into a searchable Q&A system.
+
+**Real examples:**
+
+- **Job search** — ingest your resume + job listings. Ask "which of my projects match a Senior AI Engineer role?"
+- **Codebase Q&A** — ingest your GitHub repos. Ask "how does the transcription pipeline work?"
+- **Contract review** — ingest an NDA. Ask "who owns the IP after termination?"
+- **Research** — ingest papers and notes. Ask "what did we decide about the chunking strategy?"
+
+Traditional keyword search finds files that *might* contain your answer. RAG finds the specific passage, reads it, and gives you a direct answer — with a citation so you can open the source and verify it.
+
+---
+
+## How it works
 
 ```
-Ingestion                    Query-time                    Evaluation
-────────                    ─────────                    ─────────
-Document Loader ──┐        Query ──┐                  Golden Q&A
-Chunker ──────────┼──▶ Vector Store│                  Eval Harness
-BM25 Index ───────┤        ├──────▼──────┐            Metrics
-                   │        │  Dense Retriever │         Reports
-                   │        │  BM25 Retriever  │
-                   │        └──────┬──────┘
-                   │              │
-                   │         RRF Fusion
-                   │              │
-                   │         Cross-Encoder Reranker
-                   │              │
-                   │         Generator (LLM + Citation)
-                   │              │
-                   └────────────── Citation Verifier ────▶ Answer + Score
+You ask: "How does citation verification work?"
+
+                    ┌──────────────────────────────┐
+                    │  1. BM25 retrieves chunks    │
+Your question ─────▶│     matching keywords        │
+                    │  2. LLM reads the chunks   │
+                    │  3. Answer is generated     │
+                    │  4. Every [N] citation is   │
+                    │     verified against source │
+                    └──────────────────────────────┘
+
+Answer: "Citation verification occurs after generation,
+where every citation is verified using an LLM-as-judge.
+A citation is marked verified when score >= 0.7 [1]."
 ```
 
-## Tech Stack
+**Why hybrid retrieval?** Vector search finds semantically similar text. BM25 finds exact keyword matches. Technical terms like `getUserById`, `config.yaml`, and error codes get missed by vectors but caught by BM25. This uses both.
 
-| Component | Tool | Why |
-|-----------|------|-----|
-| Language | Python 3.11+ | Ecosystem standard |
-| Embeddings | OpenRouter / Omniroute (free tier) | Zero cost |
-| Vector Store | ChromaDB (file-based) | Zero infra, git-friendly |
-| Sparse Search | BM25 via `rank_bm25` | Keyword matching for exact terms |
-| LLM | Omniroute (auto/chat → hy3-free) | Zero cost |
-| Containerization | Docker | Reproducible deployment |
+---
 
-## Quick Start
+## Installation
+
+### Prerequisites
+
+- Python 3.11+
+- Docker (for Omniroute, the free LLM gateway)
+- 2GB RAM minimum
+
+### Step 1 — Clone and install
 
 ```bash
-# Clone
 git clone https://github.com/nadimkhan/rag-hybrid-search.git
 cd rag-hybrid-search
-
-# Install dependencies
 pip install -e .
+```
 
-# Start Omniroute (free LLM gateway)
+### Step 2 — Start Omniroute (free LLM, no API key needed)
+
+```bash
 docker start omniroute
+```
 
+If you don't have Omniroute, install it first:
+```bash
+docker pull ghcr.io/oscontext/omniroute:latest
+docker run -d --name omniroute -p 20128:20128 ghcr.io/oscontext/omniroute:latest
+```
+
+### Step 3 — Ingest your documents
+
+```bash
 # Ingest the sample corpus
 python scripts/ingest_sample_docs.py
 
-# Run the demo
-python scripts/demo.py
-
-# Run evaluation
-python scripts/run_eval.py
-
-# Start the API server
-make run
+# Or ingest your own documents
+python scripts/ingest_sample_docs.py --path /path/to/your/docs
 ```
 
-## Mode 1: BM25-Only (Zero Config — runs today)
+The ingest step reads all `.txt`, `.md`, `.pdf` files in the folder, splits them into chunks, and builds a searchable index.
 
-Set `USE_DENSE_RETRIEVAL=false` (default). Works without any API keys:
-- Omniroute must be running (`docker start omniroute`)
-- BM25 retrieves chunks by keyword match
-- LLM generates answers via Omniroute's free `auto/chat` endpoint
-
-## Mode 2: Full Hybrid (requires OpenRouter key)
+### Step 4 — Ask questions
 
 ```bash
-export USE_DENSE_RETRIEVAL=true
-export OPENROUTER_API_KEY="sk-or-v1-..."
-pip install -e .
-python scripts/ingest_sample_docs.py
 python scripts/demo.py
-python scripts/run_eval.py
 ```
 
-## API Endpoints
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/v1/ask` | Ask a question, get answer with citations |
-| `GET` | `/v1/documents` | List indexed documents |
-| `POST` | `/v1/ingest` | Ingest new documents |
-| `GET` | `/v1/stats` | Index stats and retrieval metrics |
-| `GET` | `/health` | Health check |
-
-## Demo Results (BM25-only, Omniroute free tier)
-
+Example output:
 ```
 Q: How does citation verification work?
-A: Citation verification occurs after generation, where every citation is
-   verified using an LLM-as-judge. A citation is marked as verified when
-   the judge's score >= 0.7. Unverified citations are flagged rather than
-   hidden [1].
+A: Citation verification occurs after generation, where every
+   citation is verified using an LLM-as-judge. A citation is
+   marked as verified when the judge's score >= 0.7 [1].
 
 Q: What is Reciprocal Rank Fusion?
-A: RRF combines rankings from multiple retrieval methods without requiring
-   score normalization. Formula: score(d) = sum(w_r / (k + rank_r(d))) [1]
+A: RRF combines rankings from multiple retrieval methods without
+   requiring score normalization. Formula: score(d) = sum(w_r / (k + rank_r(d))) [1]
 ```
 
-## Evaluation
+---
 
-**Note:** Full eval requires an OpenRouter API key for the LLM-as-judge calls.
-Without a key, the eval harness still runs retrieval and measures citation coverage.
+## Running the API server
 
-```
-python scripts/run_eval.py
+For programmatic access or building a frontend on top:
 
-==================================================
-EVALUATION REPORT (BM25-only, no API key)
-==================================================
-Total cases           : 2
-Pass rate             : 0%   (requires OpenRouter key for judge)
-Avg citation coverage : 0%   (LLM generation hit rate limit)
-Avg retrieval score   : ~0.3 (BM25 matching)
-
-# With OpenRouter key configured:
-Total cases           : 50
-Pass rate             : ~80% (expected with dense+BM25 hybrid)
-Avg confidence       : ~0.7
-==================================================
+```bash
+make run
+# or
+uvicorn src.api.main:app --host 0.0.0.0 --port 8000
 ```
 
-## Project Structure
+Then query it:
+
+```bash
+curl -X POST http://localhost:8000/v1/ask \
+  -H "Content-Type: application/json" \
+  -d '{"question": "What retrieval methods does the system use?"}'
+```
+
+Response:
+```json
+{
+  "answer": "The system uses dense retrieval via ChromaDB and sparse retrieval via BM25...",
+  "confidence": 0.75,
+  "confidence_level": "medium",
+  "citations_verified": true,
+  "chunks_retrieved": 3
+}
+```
+
+---
+
+## Two modes
+
+### Zero-config mode (runs today, no API key)
+
+Uses BM25 for retrieval + Omniroute free tier for generation. Everything works without an API key.
+
+```bash
+# Default — no setup needed
+python scripts/demo.py
+```
+
+### Full hybrid mode (requires OpenRouter API key)
+
+Adds dense vector retrieval for better semantic matching. Sign up at [openrouter.ai](https://openrouter.ai) (free tier available).
+
+```bash
+export OPENROUTER_API_KEY="sk-or-v1-..."
+export USE_DENSE_RETRIEVAL=true
+python scripts/ingest_sample_docs.py
+python scripts/demo.py
+```
+
+| Feature | Zero-config (BM25) | Full hybrid (BM25 + vectors) |
+|---------|---------------------|-------------------------------|
+| Keyword matching | Yes | Yes |
+| Semantic similarity | No | Yes |
+| Exact technical terms | Excellent | Excellent |
+| API key required | No | Yes (free tier works) |
+
+---
+
+## Project structure
 
 ```
 rag-hybrid-search/
 ├── src/
-│   ├── ingestion/        # Document loading, chunking, embedding, indexing
-│   ├── retrieval/        # Dense, sparse, RRF fusion, reranking
-│   ├── generation/      # LLM generation, citation, confidence scoring
-│   ├── api/             # FastAPI endpoints
-│   └── eval/            # Golden dataset, eval harness, metrics
-├── tests/               # 12 unit tests (all passing)
-├── scripts/             # Ingestion, eval, benchmarking scripts
+│   ├── ingestion/       # Load docs → chunk → embed → index
+│   ├── retrieval/       # Dense (ChromaDB) + sparse (BM25) + RRF fusion
+│   ├── generation/      # LLM answer + citation parsing + confidence score
+│   ├── api/            # FastAPI endpoints
+│   └── eval/           # Golden Q&A dataset + automated metrics
+├── scripts/
+│   ├── ingest_sample_docs.py   # Ingest documents
+│   ├── demo.py                # Run interactive demo
+│   └── run_eval.py            # Run evaluation harness
 ├── data/
-│   ├── corpus/          # Sample corpus (4 docs, 6 chunks)
-│   └── eval_results.json
-├── Dockerfile
-├── docker-compose.yml
-└── Makefile
+│   ├── corpus/         # Sample documents
+│   └── bm25_index.json # Built automatically after ingest
+└── tests/              # Unit tests
 ```
 
-## Environment Variables
+---
+
+## Environment variables
 
 | Variable | Default | Description |
-|---------|---------|-------------|
-| `USE_DENSE_RETRIEVAL` | `false` | Enable dense retrieval (requires OpenRouter key) |
-| `OPENROUTER_API_KEY` | — | Required for dense + full eval |
+|---|---|---|
+| `USE_DENSE_RETRIEVAL` | `false` | Enable dense vector retrieval |
+| `OPENROUTER_API_KEY` | — | For dense retrieval + full eval |
 | `OMNIRoute_BASE_URL` | `http://localhost:20128` | Omniroute gateway |
-| `LLM_MODEL` | `auto/chat` | Resolves to free provider via Omniroute |
-| `CHUNKING_STRATEGY` | `recursive` | `fixed`, `recursive`, or `semantic` |
+| `LLM_MODEL` | `auto/chat` | LLM model (free via Omniroute) |
+| `CHUNK_SIZE` | `800` | Characters per chunk |
+| `DENSE_WEIGHT` | `0.7` | RRF weight for dense results |
+| `SPARSE_WEIGHT` | `0.3` | RRF weight for BM25 results |
+
+---
+
+## Evaluation
+
+Run the automated test suite against your corpus:
+
+```bash
+python scripts/run_eval.py
+```
+
+The harness measures:
+- **Faithfulness** — are claims actually supported by the source?
+- **Citation accuracy** — do citations point to the right document?
+- **Retrieval relevance** — were the right chunks retrieved?
+- **Confidence calibration** — does the confidence score match reality?
+
+---
 
 ## Tests
 
@@ -163,6 +226,8 @@ rag-hybrid-search/
 pytest tests/ -v
 # 12 passed
 ```
+
+---
 
 ## License
 
